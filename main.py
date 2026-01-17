@@ -1,257 +1,158 @@
-import telebot
-import time
-import json
+import asyncio
+import random
 from datetime import datetime, timezone
-import os
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+)
 
 # ===============================
 # CONFIGURAÇÃO
 # ===============================
 TOKEN = "8536239572:AAG82o0mJw9WP3RKGrJTaLp-Hl2q8Gx6HYY"
-CHAT_ID = "2055716345"
+CHAT_ID = 2055716345
 
 TIMEFRAME = "1M"
-INTERVALO_LOOP = 10          # loop roda a cada 10s
-MIN_SINAL_INTERVAL = 300     # mínimo 5 min entre sinais
-MAX_SINAL_30MIN = 5
+MIN_INTERVAL = 300        # 5 minutos
+MAX_30MIN = 5
 CONF_MIN = 0.68
-SCORE_MIN = 7.0
-
-MEMORY_FILE = "troia_memory.json"
-
-bot = telebot.TeleBot(TOKEN, threaded=False)
 
 # ===============================
-# ATIVOS
+# ESTADO EM MEMÓRIA (CLOUD SAFE)
 # ===============================
+state = {
+    "last_signal": 0,
+    "signals_30m": [],
+    "wins": 0,
+    "loss": 0,
+    "green_streak": 0,
+    "max_green": 0
+}
+
 ATIVOS = [
-    "EURUSD","GBPUSD","USDJPY","AUDUSD",
-    "EURJPY","GBPJPY","EURUSD-OTC","GBPUSD-OTC"
+    "EURUSD", "GBPUSD", "USDJPY",
+    "EURUSD-OTC", "GBPUSD-OTC"
 ]
 
 # ===============================
-# MEMÓRIA PERSISTENTE
+# UTIL
 # ===============================
-def carregar_memoria():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r") as f:
-            return json.load(f)
-    return {
-        "stats": {a: {"win": 1, "loss": 1, "loss_seq": 0} for a in ATIVOS},
-        "estrategias": {
-            "tendencia": 1.0,
-            "reversao": 1.0,
-            "price_action": 1.0,
-            "micro_tendencia": 1.0
-        },
-        "wins": 0,
-        "loss": 0,
-        "green_streak": 0,
-        "max_green": 0,
-        "ultimos_sinais": []
-    }
+def agora():
+    return int(datetime.now(timezone.utc).timestamp())
 
-mem = carregar_memoria()
+def pode_enviar():
+    t = agora()
 
-def salvar_memoria():
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(mem, f, indent=2)
+    state["signals_30m"] = [x for x in state["signals_30m"] if t - x < 1800]
 
-# ===============================
-# SESSÃO (UTC)
-# ===============================
-def sessao_ativa():
-    h = datetime.now(timezone.utc).hour
-    return (7 <= h <= 11) or (13 <= h <= 17)
-
-# ===============================
-# CONTEXTO (DETERMINÍSTICO)
-# ===============================
-def contexto_mercado(ativo):
-    s = mem["stats"][ativo]
-    taxa = s["win"] / (s["win"] + s["loss"])
-
-    if taxa > 0.55:
-        return "TENDÊNCIA"
-    if taxa < 0.48:
-        return "LATERAL"
-    return "TRANSIÇÃO"
-
-# ===============================
-# CANDLE SINTÉTICO (SEM RANDOM)
-# ===============================
-def forca_candle(ativo):
-    s = mem["stats"][ativo]
-    total = s["win"] + s["loss"]
-
-    if total < 30:
-        return "MÉDIO"
-
-    taxa = s["win"] / total
-    if taxa > 0.56:
-        return "FORTE"
-    if taxa > 0.50:
-        return "MÉDIO"
-    return "FRACO"
-
-# ===============================
-# SCORE ENGINE
-# ===============================
-def calcular_score(ativo, estrategia):
-    ctx = contexto_mercado(ativo)
-    candle = forca_candle(ativo)
-    s = mem["estrategias"][estrategia]
-
-    if ctx == "TENDÊNCIA" and estrategia in ["tendencia","micro_tendencia"]:
-        s += 2.0
-    if ctx == "LATERAL" and estrategia == "reversao":
-        s += 2.0
-    if candle == "FORTE":
-        s += 1.5
-    elif candle == "MÉDIO":
-        s += 1.0
-
-    return ctx, candle, s
-
-# ===============================
-# CONTROLE DE FREQUÊNCIA
-# ===============================
-def pode_enviar_sinal():
-    agora = time.time()
-
-    mem["ultimos_sinais"] = [
-        t for t in mem["ultimos_sinais"] if agora - t < 1800
-    ]
-
-    if len(mem["ultimos_sinais"]) >= MAX_SINAL_30MIN:
+    if len(state["signals_30m"]) >= MAX_30MIN:
         return False
 
-    if mem["ultimos_sinais"] and agora - mem["ultimos_sinais"][-1] < MIN_SINAL_INTERVAL:
+    if t - state["last_signal"] < MIN_INTERVAL:
         return False
 
     return True
 
+def calcular_forca():
+    return round(random.uniform(3.5, 5.0), 2)
+
 # ===============================
-# GERAR SINAL
+# SINAL
 # ===============================
 def gerar_sinal():
-    if not sessao_ativa() or not pode_enviar_sinal():
+    ativo = random.choice(ATIVOS)
+    direcao = random.choice(["CALL 🟢", "PUT 🔴"])
+    forca = calcular_forca()
+    conf = min(0.95, forca / 5)
+
+    if conf < CONF_MIN:
         return None
 
-    melhores = []
-
-    for ativo in ATIVOS:
-        if mem["stats"][ativo]["loss_seq"] >= 2:
-            continue
-
-        estrategia = max(mem["estrategias"], key=mem["estrategias"].get)
-        ctx, candle, score = calcular_score(ativo, estrategia)
-        conf = min(0.95, score / 10)
-
-        if score >= SCORE_MIN and conf >= CONF_MIN:
-            melhores.append((score, ativo, estrategia, ctx, candle, conf))
-
-    if not melhores:
-        return None
-
-    melhores.sort(reverse=True)
-    score, ativo, estrategia, ctx, candle, conf = melhores[0]
-
-    direcao = "CALL" if ctx == "TENDÊNCIA" else "PUT"
-    mem["ultimos_sinais"].append(time.time())
-    salvar_memoria()
-
-    return ativo, direcao, estrategia, ctx, candle, score, conf
+    return ativo, direcao, forca, conf
 
 # ===============================
-# AVALIAR RESULTADO
+# RESULTADO SIMULADO
 # ===============================
-def avaliar_resultado(ativo, estrategia):
-    # ⚠️ aqui ainda é manual/simulado
-    resultado = "WIN"  # depois pode virar input manual
-
-    if resultado == "WIN":
-        mem["wins"] += 1
-        mem["green_streak"] += 1
-        mem["max_green"] = max(mem["max_green"], mem["green_streak"])
-        mem["stats"][ativo]["win"] += 1
-        mem["stats"][ativo]["loss_seq"] = 0
-        mem["estrategias"][estrategia] += 0.03
-        rtxt = "🟢 GREEN"
-    else:
-        mem["loss"] += 1
-        mem["green_streak"] = 0
-        mem["stats"][ativo]["loss"] += 1
-        mem["stats"][ativo]["loss_seq"] += 1
-        mem["estrategias"][estrategia] = max(0.5, mem["estrategias"][estrategia] - 0.05)
-        rtxt = "🔴 RED"
-
-    salvar_memoria()
-    return rtxt
-
-# ===============================
-# STATUS
-# ===============================
-@bot.message_handler(commands=["status"])
-def status(msg):
-    total = mem["wins"] + mem["loss"]
-    acc = (mem["wins"] / total * 100) if total else 0
-
-    txt = (
-        f"🤖 *TROIA NEXT v11.0*\n\n"
-        f"🟢 WIN: {mem['wins']}\n"
-        f"🔴 LOSS: {mem['loss']}\n"
-        f"🎯 Assertividade: {acc:.2f}%\n"
-        f"🔥 Greens seguidos: {mem['green_streak']}\n"
-        f"🚀 Máx Greens: {mem['max_green']}\n"
-    )
-
-    bot.send_message(CHAT_ID, txt, parse_mode="Markdown")
+def avaliar():
+    return random.choice(["GREEN 🟢", "RED 🔴"])
 
 # ===============================
 # LOOP PRINCIPAL
 # ===============================
-def main():
-    bot.send_message(
-        CHAT_ID,
-        "🤖 *TROIA NEXT v11.0*\n"
-        "🧠 Engine Estatística\n"
-        "📡 Sinais fortes apenas\n"
-        "⏱ 1 a 5 sinais / 30min",
+async def loop_sinais(app):
+    while True:
+        if pode_enviar():
+            sinal = gerar_sinal()
+            if sinal:
+                ativo, direcao, forca, conf = sinal
+
+                state["last_signal"] = agora()
+                state["signals_30m"].append(state["last_signal"])
+
+                await app.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=(
+                        "📡 *SINAL TROIA NEXT*\n\n"
+                        f"🎯 Ativo: `{ativo}`\n"
+                        f"📈 Direção: *{direcao}*\n"
+                        f"🔥 Força: *{forca}*\n"
+                        f"🎯 Confiança: *{conf*100:.1f}%*\n"
+                        f"⏱ Timeframe: {TIMEFRAME}\n"
+                        f"⏭ Próxima vela\n"
+                        f"🕒 {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                    ),
+                    parse_mode="Markdown"
+                )
+
+                await asyncio.sleep(60)
+
+                resultado = avaliar()
+                if "GREEN" in resultado:
+                    state["wins"] += 1
+                    state["green_streak"] += 1
+                    state["max_green"] = max(state["max_green"], state["green_streak"])
+                else:
+                    state["loss"] += 1
+                    state["green_streak"] = 0
+
+                await app.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=f"📊 Resultado: *{resultado}*\n🏆 Greens seguidos: *{state['green_streak']}*",
+                    parse_mode="Markdown"
+                )
+
+        await asyncio.sleep(10)
+
+# ===============================
+# /status
+# ===============================
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    total = state["wins"] + state["loss"]
+    acc = (state["wins"] / total * 100) if total else 0
+
+    await update.message.reply_text(
+        (
+            "🤖 *TROIA NEXT CLOUD*\n\n"
+            f"🟢 WIN: {state['wins']}\n"
+            f"🔴 LOSS: {state['loss']}\n"
+            f"🎯 Assertividade: {acc:.2f}%\n"
+            f"🔥 Greens seguidos: {state['green_streak']}\n"
+            f"🚀 Máx Greens: {state['max_green']}"
+        ),
         parse_mode="Markdown"
     )
-
-    while True:
-        sinal = gerar_sinal()
-
-        if sinal:
-            ativo, direcao, est, ctx, candle, score, conf = sinal
-            bot.send_message(
-                CHAT_ID,
-                f"📡 *SINAL TROIA*\n\n"
-                f"🎯 Ativo: {ativo}\n"
-                f"📈 Direção: {direcao}\n"
-                f"🧠 Estratégia: {est}\n"
-                f"📊 Contexto: {ctx}\n"
-                f"🕯 Candle: {candle}\n"
-                f"⭐ Score: {score:.2f}\n"
-                f"🎯 Confiança: {conf*100:.1f}%\n"
-                f"⏭ Próxima vela\n"
-                f"🕒 {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}",
-                parse_mode="Markdown"
-            )
-
-            time.sleep(60)
-            bot.send_message(
-                CHAT_ID,
-                f"📊 Resultado: {avaliar_resultado(ativo, est)}",
-                parse_mode="Markdown"
-            )
-
-        time.sleep(INTERVALO_LOOP)
 
 # ===============================
 # START
 # ===============================
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("status", status))
+
+    asyncio.create_task(loop_sinais(app))
+    await app.run_polling()
+
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
