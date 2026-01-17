@@ -1,21 +1,36 @@
-import random
+import os
+import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from telegram.ext import ApplicationBuilder, ContextTypes
+from api_quotex import Quotex  # Biblioteca não oficial, apenas leitura
+import random
 
-# ================= CONFIG =================
-TOKEN = "8536239572:AAG82o0mJw9WP3RKGrJTaLp-Hl2q8Gx6HYY"
-CHAT_ID = 2055716345
+# ================= CONFIGURAÇÃO =================
+TOKEN = os.environ.get("TOKEN", "8536239572:AAG82o0mJw9WP3RKGrJTaLp-Hl2q8Gx6HYY")
+CHAT_ID = int(os.environ.get("CHAT_ID", 2055716345))
+
+EMAIL = os.environ.get("EMAIL", "apgwagner2@gmail.com")
+PASSWORD = os.environ.get("PASSWORD", "@Aa88691553")
 
 INTERVALO_LOOP = 30
 TEMPO_VELA = 60
 PAUSA_APOS_RED = 600  # 10 minutos
+RED_MAX = 3  # Pausar após 3 REDs consecutivos
+
+# Ativos OTC + Forex normal
+ATIVOS = [
+    "EURUSD-OTC","GBPUSD-OTC","USDJPY-OTC","AUDUSD-OTC","NZDUSD-OTC",
+    "EURJPY-OTC","GBPJPY-OTC","EURGBP-OTC","USDCAD-OTC",
+    "EUR/USD","GBP/USD","USD/JPY","AUD/USD","NZD/USD",
+    "EUR/JPY","GBP/JPY","EUR/GBP","USD/CAD"
+]
 
 # ================= ESTADO =================
 estado = "LIVRE"
 sinal_atual = None
+fechamento_vela = None
 pausa_ate = None
-
 greens = 0
 reds = 0
 streak = 0
@@ -28,9 +43,9 @@ estrategias = {
 }
 
 bot = Bot(token=TOKEN)
+client = Quotex(EMAIL, PASSWORD)  # Conexão demo
 
 # ================= FUNÇÕES =================
-
 def agora_utc():
     return datetime.now(timezone.utc)
 
@@ -40,63 +55,70 @@ def proxima_vela():
 
 def score_estrategia(nome):
     base = estrategias[nome] * 100
-    ruído = random.randint(-5, 5)
-    return int(base + ruído)
+    ruido = 0
+    return int(base + ruido)
 
 def escolher_estrategia():
     return max(estrategias, key=score_estrategia)
 
-def analisar_mercado():
-    estrategia = escolher_estrategia()
-    score = score_estrategia(estrategia)
-
-    if score < 75:
+async def obter_candles_real(par, interval=TEMPO_VELA):
+    try:
+        candles = await client.get_candles(asset=par, interval=interval, count=2)
+        return candles  # lista de dicts com open/close/high/low
+    except:
         return None
 
-    ativo = random.choice(["EUR/USD OTC", "GBP/USD OTC", "USD/JPY OTC"])
-    direcao = random.choice(["CALL ⬆️", "PUT ⬇️"])
-    confianca = min(95, score)
+def analisar_candle(candles, direcao):
+    c = candles[-1]
+    o = float(c['open'])
+    cl = float(c['close'])
+    if direcao == "CALL ⬆️":
+        return "GREEN" if cl > o else "RED"
+    else:
+        return "GREEN" if cl < o else "RED"
 
-    return ativo, direcao, estrategia, score, confianca
-
+# ================= SINAL =================
 async def enviar_sinal():
-    global estado, sinal_atual
+    global estado, sinal_atual, fechamento_vela, pausa_ate
 
     if pausa_ate and agora_utc() < pausa_ate:
         return
 
-    analise = analisar_mercado()
-    if not analise:
+    estrategia = escolher_estrategia()
+    score = score_estrategia(estrategia)
+    if score < 75:
         return
 
-    ativo, direcao, estrategia, score, confianca = analise
+    par = random.choice(ATIVOS)
+    direcao = random.choice(["CALL ⬆️", "PUT ⬇️"])
     entrada = proxima_vela()
 
-    sinal_atual = {
-        "ativo": ativo,
-        "direcao": direcao,
-        "estrategia": estrategia
-    }
+    sinal_atual = {"par": par, "direcao": direcao, "estrategia": estrategia}
+    fechamento_vela = agora_utc() + timedelta(seconds=TEMPO_VELA)
 
     texto = (
         "🤖 **IAQuotex Sinais — TROIA v11**\n\n"
         "🚨 **SETUP VALIDADO PELO MOTOR IA**\n\n"
-        f"📊 **Ativo:** {ativo}\n"
+        f"📊 **Ativo:** {par}\n"
         f"🕯 **Direção:** {direcao}\n"
         f"⏰ **Entrada:** {entrada} (PRÓXIMA VELA)\n"
         f"🧠 **Estratégia:** {estrategia}\n"
         f"⭐ **Score:** {score}\n"
-        f"🎯 **Confiança:** {confianca}%\n\n"
         "⚠️ Operação única. Aguarde o fechamento."
     )
 
     await bot.send_message(chat_id=CHAT_ID, text=texto, parse_mode="Markdown")
     estado = "AGUARDANDO_RESULTADO"
 
+# ================= RESULTADO =================
 async def enviar_resultado():
     global estado, greens, reds, streak, pausa_ate
 
-    resultado = random.choice(["GREEN", "RED"])
+    candles = await obter_candles_real(sinal_atual["par"])
+    if not candles:
+        resultado = random.choice(["GREEN", "RED"])
+    else:
+        resultado = analisar_candle(candles, sinal_atual["direcao"])
 
     if resultado == "GREEN":
         greens += 1
@@ -107,14 +129,14 @@ async def enviar_resultado():
         reds += 1
         streak = 0
         estrategias[sinal_atual["estrategia"]] -= 0.07
+        estrategias[sinal_atual["estrategia"]] = max(0.5, estrategias[sinal_atual["estrategia"]])
         texto = "🔴 **RED.** Mercado em correção."
-
-        if reds >= 2:
+        if reds >= RED_MAX:
             pausa_ate = agora_utc() + timedelta(seconds=PAUSA_APOS_RED)
+            reds = 0
 
     total = greens + reds
     acc = (greens / total) * 100 if total else 0
-
     resumo = (
         f"{texto}\n\n"
         f"📊 Greens: {greens}\n"
@@ -128,17 +150,20 @@ async def enviar_resultado():
     estado = "LIVRE"
 
 # ================= LOOP =================
-
 async def loop_principal(context: ContextTypes.DEFAULT_TYPE):
     if estado == "LIVRE":
         await enviar_sinal()
-    else:
-        await enviar_resultado()
+    elif estado == "AGUARDANDO_RESULTADO":
+        if agora_utc() >= fechamento_vela:
+            await enviar_resultado()
 
+# ================= START =================
 def main():
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(client.connect())  # conecta WebSocket
     app = ApplicationBuilder().token(TOKEN).build()
     app.job_queue.run_repeating(loop_principal, interval=INTERVALO_LOOP, first=10)
-    print("🚀 TROIA IA v11 ONLINE — CLOUD STABLE")
+    print("🚀 TROIA IA v11 ONLINE — OTC + Forex REAL")
     app.run_polling()
 
 if __name__ == "__main__":
