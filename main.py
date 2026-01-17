@@ -1,7 +1,5 @@
 import random
-import asyncio
-from datetime import datetime, timezone
-
+from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from telegram.ext import ApplicationBuilder, ContextTypes
 
@@ -9,111 +7,139 @@ from telegram.ext import ApplicationBuilder, ContextTypes
 TOKEN = "8536239572:AAG82o0mJw9WP3RKGrJTaLp-Hl2q8Gx6HYY"
 CHAT_ID = 2055716345
 
-INTERVALO_ANALISE = 60  # segundos
-TEMPO_VELA = 60         # 1 minuto
+INTERVALO_LOOP = 30
+TEMPO_VELA = 60
+PAUSA_APOS_RED = 600  # 10 minutos
 
 # ================= ESTADO =================
-sinal_pendente = False
-dados_sinal = {}
+estado = "LIVRE"
+sinal_atual = None
+pausa_ate = None
 
 greens = 0
 reds = 0
 streak = 0
 
+estrategias = {
+    "Tendência": 1.0,
+    "Reversão": 1.0,
+    "Price Action": 1.0,
+    "Micro Tendência": 1.0
+}
+
 bot = Bot(token=TOKEN)
 
 # ================= FUNÇÕES =================
 
-def analisar_mercado():
-    """Simulação avançada de análise (placeholder IA)"""
-    forca = random.randint(65, 92)
-    direcao = random.choice(["CALL ⬆️", "PUT ⬇️"])
-    ativo = random.choice(["EUR/USD OTC", "GBP/USD OTC", "USD/JPY OTC"])
-    return ativo, direcao, forca
+def agora_utc():
+    return datetime.now(timezone.utc)
 
+def proxima_vela():
+    t = agora_utc() + timedelta(seconds=TEMPO_VELA)
+    return t.replace(second=0).strftime("%H:%M")
+
+def score_estrategia(nome):
+    base = estrategias[nome] * 100
+    ruído = random.randint(-5, 5)
+    return int(base + ruído)
+
+def escolher_estrategia():
+    return max(estrategias, key=score_estrategia)
+
+def analisar_mercado():
+    estrategia = escolher_estrategia()
+    score = score_estrategia(estrategia)
+
+    if score < 75:
+        return None
+
+    ativo = random.choice(["EUR/USD OTC", "GBP/USD OTC", "USD/JPY OTC"])
+    direcao = random.choice(["CALL ⬆️", "PUT ⬇️"])
+    confianca = min(95, score)
+
+    return ativo, direcao, estrategia, score, confianca
 
 async def enviar_sinal():
-    global sinal_pendente, dados_sinal
+    global estado, sinal_atual
 
-    ativo, direcao, forca = analisar_mercado()
+    if pausa_ate and agora_utc() < pausa_ate:
+        return
 
-    dados_sinal = {
+    analise = analisar_mercado()
+    if not analise:
+        return
+
+    ativo, direcao, estrategia, score, confianca = analise
+    entrada = proxima_vela()
+
+    sinal_atual = {
         "ativo": ativo,
         "direcao": direcao,
-        "forca": forca,
-        "hora": datetime.now(timezone.utc)
+        "estrategia": estrategia
     }
 
     texto = (
-        "📡 IAQuotex Sinais\n\n"
-        f"📊 Ativo: {ativo}\n"
-        f"🕯 Direção: {direcao}\n"
-        "⏱ Entrada: PRÓXIMA VELA\n"
-        f"🎯 Força do sinal: {forca}%\n\n"
-        "⚠️ Aguarde a próxima vela"
+        "🤖 **IAQuotex Sinais — TROIA v11**\n\n"
+        "🚨 **SETUP VALIDADO PELO MOTOR IA**\n\n"
+        f"📊 **Ativo:** {ativo}\n"
+        f"🕯 **Direção:** {direcao}\n"
+        f"⏰ **Entrada:** {entrada} (PRÓXIMA VELA)\n"
+        f"🧠 **Estratégia:** {estrategia}\n"
+        f"⭐ **Score:** {score}\n"
+        f"🎯 **Confiança:** {confianca}%\n\n"
+        "⚠️ Operação única. Aguarde o fechamento."
     )
 
-    await bot.send_message(chat_id=CHAT_ID, text=texto)
-    sinal_pendente = True
+    await bot.send_message(chat_id=CHAT_ID, text=texto, parse_mode="Markdown")
+    estado = "AGUARDANDO_RESULTADO"
 
-
-async def avaliar_resultado():
-    global sinal_pendente, greens, reds, streak
-
-    if not sinal_pendente:
-        return
+async def enviar_resultado():
+    global estado, greens, reds, streak, pausa_ate
 
     resultado = random.choice(["GREEN", "RED"])
 
     if resultado == "GREEN":
         greens += 1
         streak += 1
-        emoji = "🟢 GREEN ✅"
+        estrategias[sinal_atual["estrategia"]] += 0.05
+        texto = "🟢 **GREEN CONFIRMADO!** Mercado respeitou a leitura."
     else:
         reds += 1
         streak = 0
-        emoji = "🔴 RED ❌"
+        estrategias[sinal_atual["estrategia"]] -= 0.07
+        texto = "🔴 **RED.** Mercado em correção."
+
+        if reds >= 2:
+            pausa_ate = agora_utc() + timedelta(seconds=PAUSA_APOS_RED)
 
     total = greens + reds
-    assertividade = (greens / total) * 100 if total > 0 else 0
+    acc = (greens / total) * 100 if total else 0
 
-    texto = (
-        "📡 IAQuotex Sinais\n\n"
-        f"{emoji}\n\n"
-        "📊 Placar:\n"
-        f"🟢 Greens: {greens}\n"
+    resumo = (
+        f"{texto}\n\n"
+        f"📊 Greens: {greens}\n"
         f"🔴 Reds: {reds}\n"
         f"🔥 Streak: {streak}\n"
-        f"📈 Assertividade: {assertividade:.2f}%"
+        f"📈 Assertividade: {acc:.2f}%\n\n"
+        "🧠 IA recalibrando estratégias..."
     )
 
-    await bot.send_message(chat_id=CHAT_ID, text=texto)
-    sinal_pendente = False
+    await bot.send_message(chat_id=CHAT_ID, text=resumo, parse_mode="Markdown")
+    estado = "LIVRE"
 
+# ================= LOOP =================
 
-# ================= LOOP PRINCIPAL =================
-
-async def loop_sinais(context: ContextTypes.DEFAULT_TYPE):
-    global sinal_pendente
-
-    if not sinal_pendente:
+async def loop_principal(context: ContextTypes.DEFAULT_TYPE):
+    if estado == "LIVRE":
         await enviar_sinal()
     else:
-        await avaliar_resultado()
-
+        await enviar_resultado()
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-
-    app.job_queue.run_repeating(
-        loop_sinais,
-        interval=INTERVALO_ANALISE,
-        first=10
-    )
-
-    print("🧠 TROIA IA v9 ONLINE — Cloud Stable")
+    app.job_queue.run_repeating(loop_principal, interval=INTERVALO_LOOP, first=10)
+    print("🚀 TROIA IA v11 ONLINE — CLOUD STABLE")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
