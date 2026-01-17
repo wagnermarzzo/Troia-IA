@@ -2,7 +2,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
-from telegram.ext import ApplicationBuilder, ContextTypes
+from telegram.ext import ApplicationBuilder, CallbackContext
 from api_quotex import Quotex  # Biblioteca não oficial, apenas leitura
 import random
 
@@ -150,7 +150,7 @@ async def enviar_resultado():
     estado = "LIVRE"
 
 # ================= LOOP =================
-async def loop_principal(context: ContextTypes.DEFAULT_TYPE):
+async def loop_principal(context: CallbackContext):
     if estado == "LIVRE":
         await enviar_sinal()
     elif estado == "AGUARDANDO_RESULTADO":
@@ -158,13 +158,12 @@ async def loop_principal(context: ContextTypes.DEFAULT_TYPE):
             await enviar_resultado()
 
 # ================= START =================
-def main():
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(client.connect())  # conecta WebSocket
+async def main():
+    await client.connect()  # conecta WebSocket
     app = ApplicationBuilder().token(TOKEN).build()
-    app.job_queue.run_repeating(loop_principal, interval=INTERVALO_LOOP, first=10)
+    app.job_queue.run_repeating(loop_principal, interval=INTERVALO_LOOP, first=10, name="main_loop")
     print("🚀 TROIA IA v11 ONLINE — OTC + Forex REAL")
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
