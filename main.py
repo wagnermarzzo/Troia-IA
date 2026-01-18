@@ -3,22 +3,18 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
 from telegram.ext import ApplicationBuilder, CallbackContext
-from api_quotex import Quotex  # Biblioteca não oficial, apenas leitura
+from api_quotex import Quotex
 import random
 
 # ================= CONFIGURAÇÃO =================
-TOKEN = os.environ.get("TOKEN", "8536239572:AAG82o0mJw9WP3RKGrJTaLp-Hl2q8Gx6HYY")
-CHAT_ID = int(os.environ.get("CHAT_ID", 2055716345))
-
-EMAIL = os.environ.get("EMAIL", "apgwagner2@gmail.com")
-PASSWORD = os.environ.get("PASSWORD", "@Aa88691553")
+TOKEN = "8536239572:AAG82o0mJw9WP3RKGrJTaLp-Hl2q8Gx6HYY"
+CHAT_ID = 2055716345
 
 INTERVALO_LOOP = 30
 TEMPO_VELA = 60
 PAUSA_APOS_RED = 600  # 10 minutos
 RED_MAX = 3  # Pausar após 3 REDs consecutivos
 
-# Ativos OTC + Forex normal
 ATIVOS = [
     "EURUSD-OTC","GBPUSD-OTC","USDJPY-OTC","AUDUSD-OTC","NZDUSD-OTC",
     "EURJPY-OTC","GBPJPY-OTC","EURGBP-OTC","USDCAD-OTC",
@@ -43,7 +39,7 @@ estrategias = {
 }
 
 bot = Bot(token=TOKEN)
-client = Quotex(EMAIL, PASSWORD)  # Conexão demo
+client = Quotex("demo@email.com", "senha")  # mock não precisa real
 
 # ================= FUNÇÕES =================
 def agora_utc():
@@ -64,7 +60,7 @@ def escolher_estrategia():
 async def obter_candles_real(par, interval=TEMPO_VELA):
     try:
         candles = await client.get_candles(asset=par, interval=interval, count=2)
-        return candles  # lista de dicts com open/close/high/low
+        return candles
     except:
         return None
 
@@ -159,9 +155,9 @@ async def loop_principal(context: CallbackContext):
 
 # ================= START =================
 async def main():
-    await client.connect()  # conecta WebSocket
+    await client.connect()
     app = ApplicationBuilder().token(TOKEN).build()
-    app.job_queue.run_repeating(loop_principal, interval=INTERVALO_LOOP, first=10, name="main_loop")
+    app.job_queue.run_repeating(loop_principal, interval=INTERVALO_LOOP, first=10)
     print("🚀 TROIA IA v11 ONLINE — OTC + Forex REAL")
     await app.run_polling()
 
