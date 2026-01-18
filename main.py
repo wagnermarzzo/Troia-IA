@@ -1,4 +1,3 @@
-import os
 import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
@@ -10,10 +9,13 @@ import random
 TOKEN = "8536239572:AAG82o0mJw9WP3RKGrJTaLp-Hl2q8Gx6HYY"
 CHAT_ID = 2055716345
 
+EMAIL = "apgwagner2@gmail.com"
+PASSWORD = "@Aa88691553"
+
 INTERVALO_LOOP = 30
 TEMPO_VELA = 60
 PAUSA_APOS_RED = 600  # 10 minutos
-RED_MAX = 3  # Pausar após 3 REDs consecutivos
+RED_MAX = 3
 
 ATIVOS = [
     "EURUSD-OTC","GBPUSD-OTC","USDJPY-OTC","AUDUSD-OTC","NZDUSD-OTC",
@@ -39,7 +41,7 @@ estrategias = {
 }
 
 bot = Bot(token=TOKEN)
-client = Quotex("demo@email.com", "senha")  # mock não precisa real
+client = Quotex(EMAIL, PASSWORD)
 
 # ================= FUNÇÕES =================
 def agora_utc():
@@ -50,17 +52,14 @@ def proxima_vela():
     return t.replace(second=0).strftime("%H:%M")
 
 def score_estrategia(nome):
-    base = estrategias[nome] * 100
-    ruido = 0
-    return int(base + ruido)
+    return int(estrategias[nome] * 100)
 
 def escolher_estrategia():
     return max(estrategias, key=score_estrategia)
 
 async def obter_candles_real(par, interval=TEMPO_VELA):
     try:
-        candles = await client.get_candles(asset=par, interval=interval, count=2)
-        return candles
+        return await client.get_candles(asset=par, interval=interval, count=2)
     except:
         return None
 
@@ -124,8 +123,7 @@ async def enviar_resultado():
     else:
         reds += 1
         streak = 0
-        estrategias[sinal_atual["estrategia"]] -= 0.07
-        estrategias[sinal_atual["estrategia"]] = max(0.5, estrategias[sinal_atual["estrategia"]])
+        estrategias[sinal_atual["estrategia"]] = max(0.5, estrategias[sinal_atual["estrategia"]] - 0.07)
         texto = "🔴 **RED.** Mercado em correção."
         if reds >= RED_MAX:
             pausa_ate = agora_utc() + timedelta(seconds=PAUSA_APOS_RED)
