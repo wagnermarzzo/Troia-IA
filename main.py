@@ -1,3 +1,5 @@
+import api_quotex
+print("api_quotex encontrado!")
 import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Bot
